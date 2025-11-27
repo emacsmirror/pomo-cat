@@ -290,91 +290,85 @@ Uses theme colors for foreground/background."
 
 (defun pomo-cat--calculate-frame-geometry (text)
   "Calculate optimal frame geometry for TEXT display.
-Returns plist with :left, :top, :width, :height, :char-width, :char-height."
+Returns plist with :left, :top, :width, :height."
   (let*
       ((size (pomo-cat--measure-ascii text))
        (cols (car size))
        (lines (cdr size))
        (workarea (frame-monitor-workarea))
+       (work-left (nth 0 workarea))
+       (work-top (nth 1 workarea))
        (work-width (nth 2 workarea))
        (work-height (nth 3 workarea))
        (char-width (frame-char-width))
        (char-height (frame-char-height))
-       ;; Add optimal margins to prevent text wrapping
-       (safe-cols (+ cols 2)) ; Add 1 character margin on each side (minimal)
-       (safe-lines (+ lines 2)) ; Add 1 line margin top and bottom
-       ;; Calculate frame size in pixels
-       (frame-width-pixels (* safe-cols char-width))
-       (frame-height-pixels (* safe-lines char-height))
+       ;; Add margin for internal border (8px each side = 16px total)
+       (border-pixels 16)
+       ;; Calculate frame size in pixels for centering calculation
+       (frame-width-pixels (+ (* cols char-width) border-pixels))
+       (frame-height-pixels (+ (* lines char-height) border-pixels))
        ;; Calculate coordinates for center screen positioning
-       (center-x (/ (- work-width frame-width-pixels) 2))
-       (center-y (/ (- work-height frame-height-pixels) 2)))
+       (center-x
+        (+ work-left (/ (- work-width frame-width-pixels) 2)))
+       (center-y
+        (+ work-top (/ (- work-height frame-height-pixels) 2))))
     (list
-     :left (max 0 center-x) ; Avoid negative values
-     :top (max 0 center-y) ; Avoid negative values
-     :width safe-cols
-     :height safe-lines
-     :char-width char-width
-     :char-height char-height)))
+     :left (max 0 center-x)
+     :top (max 0 center-y)
+     :width cols
+     :height lines)))
 
 (defun pomo-cat--create-dedicated-frame (geometry _text)
   "Create dedicated frame with GEOMETRY.
 GEOMETRY is a plist with :left, :top, :width, :height.
 _TEXT is unused but kept for API consistency."
-  (let* ((colors (pomo-cat--theme-colors)))
-    (make-frame
-     `((name . "🐱 Pomo Cat Break")
-       (title . "Take a Break!")
-       (width . ,(plist-get geometry :width))
-       (height . ,(plist-get geometry :height))
-       (left . ,(plist-get geometry :left))
-       (top . ,(plist-get geometry :top))
-       (background-color . ,(cdr colors))
-       (foreground-color . ,(car colors))
-       ;; Minimal UI settings
-       (tool-bar-lines . 0)
-       (menu-bar-lines . 0)
-       (tab-bar-lines . 0)
-       (vertical-scroll-bars . nil)
-       (horizontal-scroll-bars . nil)
-       (left-fringe . 8)
-       (right-fringe . 8)
-       ;; Focus control
-       (no-focus-on-map . t)
-       ;; Removed auto-raise and z-group for normal window behavior
-       ;; Other settings
-       (unsplittable . t)
-       (minibuffer . nil)))))
+  (let*
+      ((colors (pomo-cat--theme-colors))
+       (target-width (plist-get geometry :width))
+       (target-height (plist-get geometry :height))
+       (base-params
+        `((name . "🐱 Pomo Cat Break")
+          (title . "Take a Break!")
+          ;; Size in characters
+          (width . ,target-width)
+          (height . ,target-height)
+          (left . ,(plist-get geometry :left))
+          (top . ,(plist-get geometry :top))
+          (user-position . t)
+          (background-color . ,(cdr colors))
+          (foreground-color . ,(car colors))
+          ;; Minimal UI settings
+          (tool-bar-lines . 0)
+          (menu-bar-lines . 0)
+          (tab-bar-lines . 0)
+          (vertical-scroll-bars . nil)
+          (horizontal-scroll-bars . nil)
+          (left-fringe . 0)
+          (right-fringe . 0)
+          (internal-border-width . 8)
+          ;; Focus control
+          (no-focus-on-map . t)
+          ;; Other settings
+          (unsplittable . t)
+          (minibuffer . nil)))
+       ;; Temporarily disable default-frame-alist to prevent override
+       (frame
+        (let ((default-frame-alist nil))
+          (make-frame base-params))))
+    frame))
 
 (defun pomo-cat--show-dedicated-frame ()
-  "Display cat in a dedicated Emacs frame using only built-in functions.
-
-Main entry point for dedicated frame display. Creates a new independent window
-showing the ASCII cat art. The window appears in the center of the screen and
-behaves like a normal application window.
-
-Behavior:
-  - Calculates optimal frame size based on ASCII art dimensions
-  - Creates frame with minimal UI for clean appearance
-  - Displays content without text wrapping issues
-  - Integrates with existing focus management settings
-
-Window Management:
-  - Appears initially but can be moved behind other windows
-  - Does not steal focus unless pomo-cat-get-focus is enabled
-  - Automatically cleaned up when break ends"
+  "Display cat in a dedicated Emacs frame using only built-in functions."
   (let* ((cat-text (pomo-cat--get-cat-text))
          (geometry (pomo-cat--calculate-frame-geometry cat-text))
          (frame (pomo-cat--create-dedicated-frame geometry cat-text)))
     (pomo-cat--state-set :dedicated-frame frame)
-    ;; Display content
     (with-selected-frame frame
       (switch-to-buffer "*pomo-cat-break*")
-      (read-only-mode -1) ; Temporarily disable read-only mode
+      (read-only-mode -1)
       (erase-buffer)
       (insert cat-text)
       (goto-char (point-min))
-      ;; Removed center-region - ASCII art is pre-formatted, extra whitespace causes wrapping
       (read-only-mode 1))))
 
 (defun pomo-cat--manage-frame-focus (frame)
