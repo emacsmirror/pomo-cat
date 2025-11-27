@@ -369,6 +369,7 @@ _TEXT is unused but kept for API consistency."
       (erase-buffer)
       (insert cat-text)
       (goto-char (point-min))
+      (setq-local mode-line-format nil)
       (read-only-mode 1))))
 
 (defun pomo-cat--manage-frame-focus (frame)
