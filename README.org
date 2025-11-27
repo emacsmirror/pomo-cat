@@ -72,10 +72,17 @@ The package is available on MELPA. Dependencies include ~posframe~ and ~popon~.
 ** Quick Start
 
 #+begin_src emacs-lisp
-  ;; Choose your preferred display method
-  (setq pomo-cat-display-method 'dedicated-frame)  ; Independent window
-  ;; (setq pomo-cat-display-method 'posframe)      ; GUI overlay
-  ;; (setq pomo-cat-display-method 'popon)         ; Terminal popup
+  ;; Option 1: Use dedicated frame (independent window, GUI only)
+  (setq pomo-cat-use-dedicated-frame t)
+
+  ;; Option 2: Use image with posframe (GUI only)
+  (setq pomo-cat-use-dedicated-frame nil)
+  (setq pomo-cat-cat-image-path
+        (expand-file-name "cat.png"
+                          (file-name-directory (locate-library "pomo-cat"))))
+
+  ;; Option 3: Use ASCII art with popon (default, works in terminal)
+  ;; No configuration needed
 
   ;; Start the timer
   M-x pomo-cat-start
@@ -90,6 +97,16 @@ The package is available on MELPA. Dependencies include ~posframe~ and ~popon~.
 
 ** Display Methods Explained
 
+The display method is automatically selected based on your configuration:
+
+| ~pomo-cat-use-dedicated-frame~ | Image Path | GUI | Display Method       |
+|--------------------------------+------------+-----+----------------------|
+| t                              | -          | Yes | Dedicated Frame      |
+| t                              | -          | No  | Popon (ASCII)        |
+| nil                            | Set        | Yes | Posframe (Image)     |
+| nil                            | Not set    | Yes | Posframe (ASCII)     |
+| nil                            | Not set    | No  | Popon (ASCII)        |
+
 *** Dedicated Frame
 
 Creates an independent Emacs window that:
@@ -97,22 +114,22 @@ Creates an independent Emacs window that:
 - Remains visible even when other applications are active
 - Behaves like a normal window (can be moved behind others with Alt+Tab)
 - Perfect for multi-monitor setups and full-screen applications
-- Uses only built-in Emacs functions (no external dependencies)
+- Supports both images and ASCII art
+- Uses only built-in Emacs functions (no external dependencies for frame itself)
 
-*** Posframe (GUI Overlay)
+*** Posframe (GUI)
 
-Displays an overlay within Emacs that:
+Displays an overlay within Emacs (GUI only):
 - Shows on top of your current Emacs session
-- Supports both ASCII art and custom images
+- Used for both image and ASCII art display in GUI
 - Requires the `posframe` package
 - Best for single-monitor workflows
 
 *** Popon (Terminal)
 
-Shows a popup in terminal Emacs:
-- ASCII art display in text-based environments
+Shows a popup with ASCII art in terminal Emacs:
+- Used when running Emacs in terminal (non-GUI)
 - Requires the `popon` package
-- Ideal for terminal-only workflows
 
 * Customization
 
@@ -147,28 +164,29 @@ Use =M-x customize-group RET pomo-cat RET= or set variables directly in your ini
 - `pomo-cat-cat-image-path` ::
   File path to a cat image (e.g., PNG) to display during breaks in GUI Emacs.
   If this is nil or the image doesn't exist, ASCII art will be shown instead.
+  A sample image `cat.png` is bundled with this package.
   Example:
   #+begin_src emacs-lisp
+    ;; Use bundled sample image
+    (setq pomo-cat-cat-image-path
+          (expand-file-name "cat.png"
+                            (file-name-directory (locate-library "pomo-cat"))))
+
+    ;; Or use your own image
     (setq pomo-cat-cat-image-path "~/Pictures/cats/cute-cat.png")
   #+end_src
 
-- `pomo-cat-display-method` ::
-  Method used to show the cat on screen.
-  Available options:
-  - `'dedicated-frame` :: Creates an independent Emacs window
-  - `'posframe` :: Uses `posframe` for GUI overlay display with optional images
-  - `'popon` (default) :: Uses `popon` for terminal-based popup display
-  The display method automatically falls back to ASCII in message area if the selected method is unavailable.
+- `pomo-cat-use-dedicated-frame` ::
+  When non-nil and in GUI environment, displays break notification in a
+  separate independent frame. When nil, uses posframe (if image is configured)
+  or popon (ASCII art). Default is nil.
 
   #+begin_src emacs-lisp
-    ;; Independent window visible with any application
-    (setq pomo-cat-display-method 'dedicated-frame)
+    ;; Use dedicated frame (independent window)
+    (setq pomo-cat-use-dedicated-frame t)
 
-    ;; For overlay within Emacs (supports custom images)
-    (setq pomo-cat-display-method 'posframe)
-
-    ;; For terminal use
-    (setq pomo-cat-display-method 'popon)
+    ;; Use posframe/popon based on image configuration (default)
+    (setq pomo-cat-use-dedicated-frame nil)
   #+end_src
 
 - `pomo-cat-get-focus` ::
@@ -206,8 +224,13 @@ The dedicated frame mode offers the most robust break notification experience:
 
 #+begin_src emacs-lisp
   ;; Enable dedicated frame with optimal settings
-  (setq pomo-cat-display-method 'dedicated-frame
+  (setq pomo-cat-use-dedicated-frame t
         pomo-cat-get-focus nil)  ; Non-intrusive notifications
+
+  ;; Optionally use image in dedicated frame
+  (setq pomo-cat-cat-image-path
+        (expand-file-name "cat.png"
+                          (file-name-directory (locate-library "pomo-cat"))))
 
   ;; The frame will:
   ;; - Appear in screen center automatically
@@ -238,15 +261,17 @@ Works seamlessly with different environments:
 If the cat doesn't appear as expected:
 
 #+begin_src emacs-lisp
-  ;; Check your current display method
-  (message "Display method: %s" pomo-cat-display-method)
+  ;; Check your current configuration
+  (message "Use dedicated frame: %s" pomo-cat-use-dedicated-frame)
+  (message "Image path: %s" pomo-cat-cat-image-path)
+  (message "GUI environment: %s" (display-graphic-p))
 
   ;; Verify dependencies are available
   (message "Posframe available: %s" (featurep 'posframe))
   (message "Popon available: %s" (featurep 'popon))
 
-  ;; Test dedicated frame (no dependencies needed)
-  (setq pomo-cat-display-method 'dedicated-frame)
+  ;; Test dedicated frame (no dependencies needed for frame itself)
+  (setq pomo-cat-use-dedicated-frame t)
 #+end_src
 
 ** Focus Problems

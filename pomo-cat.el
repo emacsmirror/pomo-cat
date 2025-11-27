@@ -1,7 +1,7 @@
 ;;; pomo-cat.el --- Pomodoro timer with cat-themed breaks -*- lexical-binding: t; -*-
 
 ;; Author: Nobuyuki Kamimoto
-;; Version: 1.1
+;; Version: 1.2
 ;; Package-Requires: ((emacs "27.1") (popon "0.13") (posframe "1.1.1"))
 ;; Keywords: convenience, tools, calendar
 ;; URL: https://github.com/kn66/pomo-cat.el
@@ -11,8 +11,9 @@
 
 ;; pomo-cat.el is a simple Pomodoro timer with cat-themed break messages.
 ;; During breaks, it shows an ASCII cat or an optional cat image using
-;; either `popon` (TTY) or `posframe` (GUI).  It supports configurable
-;; durations and cycles, making it easy to adopt for your workflow.
+;; `popon` (terminal) or `posframe` (GUI), or in a dedicated frame
+;; (independent window).  It supports configurable durations and cycles,
+;; making it easy to adopt for your workflow.
 
 ;;; Code:
 
@@ -48,25 +49,26 @@
   :type 'integer)
 
 (defcustom pomo-cat-cat-image-path nil
-  "Path to a cat image (e.g., PNG) to be shown in GUI.  If nil, ASCII art is used."
+  "Path to a cat image (e.g., PNG) to be shown in GUI.  If nil, ASCII art is used.
+
+A sample image `cat.png' is bundled with this package.
+
+Example configuration:
+  (setq pomo-cat-cat-image-path
+        (expand-file-name \"cat.png\"
+                          (file-name-directory (locate-library \"pomo-cat\"))))"
   :type '(choice (const nil) file))
 
 (defcustom pomo-cat-cycles-before-long-break 4
   "Number of Pomodoro work sessions before a long break."
   :type 'integer)
 
-(defcustom pomo-cat-display-method 'popon
-  "Display method for the cat during breaks.
-
-- \\='popon: Uses popon (recommended for terminal).
-- \\='posframe: Uses posframe (recommended for GUI; supports optional images).
-- \\='dedicated-frame: Uses dedicated Emacs frame (independent window)."
-  :type
-  '(choice
-    (const :tag "popon (terminal)" popon)
-    (const :tag "posframe (GUI)" posframe)
-    (const
-     :tag "dedicated-frame (independent window)" dedicated-frame)))
+(defcustom pomo-cat-use-dedicated-frame nil
+  "Use dedicated frame for break display.
+When non-nil and in GUI environment, displays break notification
+in a separate independent frame.
+When nil, uses posframe (if image is configured) or popon (ASCII art)."
+  :type 'boolean)
 
 (defcustom pomo-cat-ascii-cat "
 ███████████████████████████
@@ -244,23 +246,23 @@ Uses theme colors for foreground/background."
        :height height))))
 
 (defun pomo-cat--show-ascii-cat ()
-  "Display ASCII art of the cat using `popon` or `posframe`."
+  "Display ASCII art of the cat using `posframe` (GUI) or `popon` (terminal)."
   (let* ((cat-text (pomo-cat--get-cat-text))
          (size (pomo-cat--measure-ascii cat-text))
          (cols (car size))
          (lines (cdr size)))
     (cond
+     ;; GUI: use posframe
+     ((and (featurep 'posframe) (display-graphic-p))
+      (pomo-cat--show-posframe cat-text cols lines))
      ;; Terminal: use popon
-     ((and (featurep 'popon) (not (display-graphic-p)))
+     ((featurep 'popon)
       (let* ((frame-width (frame-width))
              (frame-height (frame-height))
              (x (max 0 (/ (- frame-width cols) 2)))
              (y (max 0 (/ (- frame-height lines) 2))))
         (pomo-cat--state-set
          :popon-instance (popon-create cat-text `(,x . ,y)))))
-     ;; GUI: use posframe
-     ((and (featurep 'posframe) (display-graphic-p))
-      (pomo-cat--show-posframe cat-text cols lines))
      ;; Fallback: message area
      (t
       (message "\n%s" cat-text)))))
@@ -287,6 +289,39 @@ Uses theme colors for foreground/background."
       (with-current-buffer "*pomo-cat*"
         (erase-buffer)
         (insert-image img)))))
+
+(defun pomo-cat--image-available-p ()
+  "Return non-nil if cat image is available for display."
+  (and (display-graphic-p)
+       (stringp pomo-cat-cat-image-path)
+       (file-exists-p pomo-cat-cat-image-path)))
+
+(defun pomo-cat--calculate-frame-geometry-for-image (img)
+  "Calculate frame geometry for IMG display.
+Returns plist with :left, :top, :width, :height."
+  (let* ((img-width (car (image-size img t)))
+         (img-height (cdr (image-size img t)))
+         (char-width (frame-char-width))
+         (char-height (frame-char-height))
+         (cols (ceiling (/ (float img-width) char-width)))
+         (lines (ceiling (/ (float img-height) char-height)))
+         (workarea (frame-monitor-workarea))
+         (work-left (nth 0 workarea))
+         (work-top (nth 1 workarea))
+         (work-width (nth 2 workarea))
+         (work-height (nth 3 workarea))
+         (border-pixels 16)
+         (frame-width-pixels (+ img-width border-pixels))
+         (frame-height-pixels (+ img-height border-pixels))
+         (center-x
+          (+ work-left (/ (- work-width frame-width-pixels) 2)))
+         (center-y
+          (+ work-top (/ (- work-height frame-height-pixels) 2))))
+    (list
+     :left (max 0 center-x)
+     :top (max 0 center-y)
+     :width cols
+     :height lines)))
 
 (defun pomo-cat--calculate-frame-geometry (text)
   "Calculate optimal frame geometry for TEXT display.
@@ -318,10 +353,9 @@ Returns plist with :left, :top, :width, :height."
      :width cols
      :height lines)))
 
-(defun pomo-cat--create-dedicated-frame (geometry _text)
+(defun pomo-cat--create-dedicated-frame (geometry)
   "Create dedicated frame with GEOMETRY.
-GEOMETRY is a plist with :left, :top, :width, :height.
-_TEXT is unused but kept for API consistency."
+GEOMETRY is a plist with :left, :top, :width, :height."
   (let*
       ((colors (pomo-cat--theme-colors))
        (target-width (plist-get geometry :width))
@@ -358,16 +392,26 @@ _TEXT is unused but kept for API consistency."
     frame))
 
 (defun pomo-cat--show-dedicated-frame ()
-  "Display cat in a dedicated Emacs frame using only built-in functions."
-  (let* ((cat-text (pomo-cat--get-cat-text))
-         (geometry (pomo-cat--calculate-frame-geometry cat-text))
-         (frame (pomo-cat--create-dedicated-frame geometry cat-text)))
+  "Display cat in a dedicated Emacs frame using only built-in functions.
+Displays image if available, otherwise falls back to ASCII art."
+  (let* ((use-image (pomo-cat--image-available-p))
+         (img
+          (when use-image
+            (create-image pomo-cat-cat-image-path)))
+         (geometry
+          (if use-image
+              (pomo-cat--calculate-frame-geometry-for-image img)
+            (pomo-cat--calculate-frame-geometry
+             (pomo-cat--get-cat-text))))
+         (frame (pomo-cat--create-dedicated-frame geometry)))
     (pomo-cat--state-set :dedicated-frame frame)
     (with-selected-frame frame
       (switch-to-buffer "*pomo-cat-break*")
       (read-only-mode -1)
       (erase-buffer)
-      (insert cat-text)
+      (if use-image
+          (insert-image img)
+        (insert (pomo-cat--get-cat-text)))
       (goto-char (point-min))
       (setq-local mode-line-format nil)
       (read-only-mode 1))))
@@ -386,27 +430,22 @@ _TEXT is unused but kept for API consistency."
       (other-frame 0))))
 
 (defun pomo-cat--show-cat ()
-  "Show a cat using the selected `pomo-cat-display-method`."
+  "Show a cat based on configuration and environment.
+- If `pomo-cat-use-dedicated-frame' is non-nil and GUI: dedicated-frame
+- If image is configured and GUI: posframe with image
+- Otherwise: popon with ASCII art"
   (condition-case err
       (cond
-       ;; Posframe with image
-       ((and (eq pomo-cat-display-method 'posframe)
-             (display-graphic-p)
-             (stringp pomo-cat-cat-image-path)
-             (file-exists-p pomo-cat-cat-image-path))
-        (pomo-cat--show-image))
-
-       ;; Posframe with ASCII art
-       ((and (eq pomo-cat-display-method 'posframe)
-             (display-graphic-p))
-        (pomo-cat--show-posframe (pomo-cat--get-cat-text)))
-
-       ;; Dedicated frame
-       ((eq pomo-cat-display-method 'dedicated-frame)
+       ;; Dedicated frame (GUI only)
+       ((and pomo-cat-use-dedicated-frame (display-graphic-p))
         (pomo-cat--show-dedicated-frame)
         (when pomo-cat-get-focus
           (pomo-cat--manage-frame-focus
            (pomo-cat--state-get :dedicated-frame))))
+
+       ;; Posframe with image (GUI only, when image is configured)
+       ((pomo-cat--image-available-p)
+        (pomo-cat--show-image))
 
        ;; Default: ASCII cat (popon or fallback)
        (t
@@ -502,13 +541,6 @@ If SECONDS is negative, it is treated as 0."
                  "working")))))
 
 ;;; Initialization
-
-;; Attempt to auto-set image path if cat.png is bundled with the file
-(unless pomo-cat-cat-image-path
-  (when load-file-name
-    (setq pomo-cat-cat-image-path
-          (expand-file-name "cat.png"
-                            (file-name-directory load-file-name)))))
 
 ;; Initialize state on load
 (pomo-cat--reset-state)
