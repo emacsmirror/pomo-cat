@@ -102,9 +102,11 @@ I.e. to notify the user of a break even if not working in Emacs."
   "Internal state plist for pomo-cat.
 Keys:
   :timer - Timer object for Pomodoro intervals
+  :display-ticker - Repeating timer object for break display updates
   :cycle-count - Number of completed work sessions
   :break-type - Current break type (\\='short or \\='long)
   :in-break - Whether currently in a break
+  :phase-end-time - End time of current phase as a time value
   :popon-instance - Popon display instance
   :dedicated-frame - Dedicated frame instance")
 
@@ -121,12 +123,17 @@ Keys:
   (let ((timer (pomo-cat--state-get :timer)))
     (when timer
       (cancel-timer timer)))
+  (let ((ticker (pomo-cat--state-get :display-ticker)))
+    (when ticker
+      (cancel-timer ticker)))
   (setq pomo-cat--state
         '(:timer
           nil
+          :display-ticker nil
           :cycle-count 0
           :break-type short
           :in-break nil
+          :phase-end-time nil
           :popon-instance nil
           :dedicated-frame nil)))
 
@@ -192,6 +199,13 @@ Returns VALUE if valid, otherwise returns a sensible default and warns."
       (cancel-timer timer)
       (pomo-cat--state-set :timer nil))))
 
+(defun pomo-cat--cancel-display-ticker ()
+  "Safely cancel the display update ticker if it exists."
+  (let ((ticker (pomo-cat--state-get :display-ticker)))
+    (when (and ticker (timerp ticker))
+      (cancel-timer ticker)
+      (pomo-cat--state-set :display-ticker nil))))
+
 (defun pomo-cat--schedule-timer (seconds callback)
   "Schedule CALLBACK to run after SECONDS, replacing any existing timer.
 This ensures only one timer is active at a time."
@@ -202,6 +216,7 @@ This ensures only one timer is active at a time."
   "Clear the current cat display, whether posframe, popon, or dedicated frame."
   (condition-case err
       (progn
+        (pomo-cat--cancel-display-ticker)
         ;; Clean up posframe
         (when (and (featurep 'posframe) (posframe-workable-p))
           (posframe-delete "*pomo-cat*"))
@@ -233,9 +248,42 @@ This ensures only one timer is active at a time."
 
 (defun pomo-cat--get-cat-text ()
   "Get the ASCII cat text, ensuring it is a string."
-  (if (stringp pomo-cat-ascii-cat)
-      pomo-cat-ascii-cat
-    (format "%s" pomo-cat-ascii-cat)))
+  (let ((text (if (stringp pomo-cat-ascii-cat)
+                  pomo-cat-ascii-cat
+                (format "%s" pomo-cat-ascii-cat))))
+    ;; Multiline literals often include leading/trailing blank lines.
+    ;; Trim only outer newlines so the visible content fits predictably.
+    (replace-regexp-in-string
+     "\n+\\'" ""
+     (replace-regexp-in-string "\\`\n+" "" text))))
+
+(defun pomo-cat--remaining-break-seconds ()
+  "Return remaining break time in seconds, or nil if unavailable."
+  (let ((end-time (pomo-cat--state-get :phase-end-time)))
+    (when end-time
+      (max 0
+           (ceiling
+            (float-time
+             (time-subtract end-time (current-time))))))))
+
+(defun pomo-cat--format-mmss (seconds)
+  "Format SECONDS as MM:SS."
+  (format "%02d:%02d" (/ seconds 60) (% seconds 60)))
+
+(defun pomo-cat--break-remaining-text ()
+  "Return break remaining-time string, or nil outside breaks."
+  (when (pomo-cat--state-get :in-break)
+    (let ((remaining (pomo-cat--remaining-break-seconds)))
+      (when (integerp remaining)
+        (format "Remaining: %s" (pomo-cat--format-mmss remaining))))))
+
+(defun pomo-cat--ascii-cat-display-text ()
+  "Return ASCII cat text with optional break countdown line."
+  (let ((cat-text (pomo-cat--get-cat-text))
+        (remaining-text (pomo-cat--break-remaining-text)))
+    (if remaining-text
+        (concat remaining-text "\n" cat-text)
+      cat-text)))
 
 (defun pomo-cat--measure-ascii (text)
   "Return (width . height) of multiline ASCII TEXT."
@@ -266,7 +314,7 @@ Uses theme colors for foreground/background."
 
 (defun pomo-cat--show-ascii-cat ()
   "Display ASCII art of the cat using `posframe` (GUI) or `popon` (terminal)."
-  (let* ((cat-text (pomo-cat--get-cat-text))
+  (let* ((cat-text (pomo-cat--ascii-cat-display-text))
          (size (pomo-cat--measure-ascii cat-text))
          (cols (car size))
          (lines (cdr size)))
@@ -278,6 +326,10 @@ Uses theme colors for foreground/background."
       (pomo-cat--show-posframe cat-text cols lines))
      ;; Terminal: use popon
      ((featurep 'popon)
+      (let ((old-popo (pomo-cat--state-get :popon-instance)))
+        (when old-popo
+          (ignore-errors (popon-kill old-popo))
+          (pomo-cat--state-set :popon-instance nil)))
       (let* ((frame-width (frame-width))
              (frame-height (frame-height))
              (x (max 0 (/ (- frame-width cols) 2)))
@@ -296,13 +348,21 @@ Uses theme colors for foreground/background."
              (stringp pomo-cat-cat-image-path)
              (file-exists-p pomo-cat-cat-image-path))
     (condition-case err
-        (let* ((img (create-image pomo-cat-cat-image-path))
+        (let* ((remaining-text (pomo-cat--break-remaining-text))
+               (img (create-image pomo-cat-cat-image-path))
                (width (car (image-size img t)))
                (height (cdr (image-size img t)))
                (char-width (frame-char-width))
                (char-height (frame-char-height))
-               (cols (ceiling (/ (float width) char-width)))
-               (lines (ceiling (/ (float height) char-height))))
+               (img-cols (ceiling (/ (float width) char-width)))
+               (img-lines (ceiling (/ (float height) char-height)))
+               (text-cols (if remaining-text
+                              (string-width remaining-text)
+                            0))
+               (cols (max img-cols text-cols))
+               ;; Reserve an extra line for countdown and one safety line
+               ;; because image row height rounding can clip the last line.
+               (lines (+ img-lines (if remaining-text 2 0))))
           (posframe-show
            "*pomo-cat*"
            :string ""
@@ -311,7 +371,9 @@ Uses theme colors for foreground/background."
            :height lines)
           (with-current-buffer "*pomo-cat*"
             (erase-buffer)
-            (insert-image img))
+            (insert-image img)
+            (when remaining-text
+              (insert "\n" remaining-text)))
           t)
       (error
        (message "pomo-cat: Error showing image: %s"
@@ -324,23 +386,30 @@ Uses theme colors for foreground/background."
        (stringp pomo-cat-cat-image-path)
        (file-exists-p pomo-cat-cat-image-path)))
 
-(defun pomo-cat--calculate-frame-geometry-for-image (img)
+(defun pomo-cat--calculate-frame-geometry-for-image (img &optional remaining-text)
   "Calculate frame geometry for IMG display.
 Returns plist with :left, :top, :width, :height."
   (let* ((img-width (car (image-size img t)))
          (img-height (cdr (image-size img t)))
          (char-width (frame-char-width))
          (char-height (frame-char-height))
-         (cols (ceiling (/ (float img-width) char-width)))
-         (lines (ceiling (/ (float img-height) char-height)))
+         (img-cols (ceiling (/ (float img-width) char-width)))
+         (img-lines (ceiling (/ (float img-height) char-height)))
+         (text-cols (if remaining-text (string-width remaining-text) 0))
+         ;; Keep one extra safety line to avoid clipping countdown text.
+         (extra-lines (if remaining-text 2 0))
+         (cols (max img-cols text-cols))
+         (lines (+ img-lines extra-lines))
          (workarea (frame-monitor-workarea))
          (work-left (nth 0 workarea))
          (work-top (nth 1 workarea))
          (work-width (nth 2 workarea))
          (work-height (nth 3 workarea))
          (border-pixels 16)
-         (frame-width-pixels (+ img-width border-pixels))
-         (frame-height-pixels (+ img-height border-pixels))
+         (frame-width-pixels
+          (+ (max img-width (* text-cols char-width)) border-pixels))
+         (frame-height-pixels
+          (+ img-height (* extra-lines char-height) border-pixels))
          (center-x
           (+ work-left (/ (- work-width frame-width-pixels) 2)))
          (center-y
@@ -351,13 +420,46 @@ Returns plist with :left, :top, :width, :height."
      :width cols
      :height lines)))
 
+(defun pomo-cat--update-dedicated-frame-content (frame use-image img remaining-text)
+  "Update FRAME buffer contents with cat display.
+USE-IMAGE selects between IMG and ASCII.
+REMAINING-TEXT is appended when non-nil."
+  (with-selected-frame frame
+    (switch-to-buffer "*pomo-cat-break*")
+    (read-only-mode -1)
+    (erase-buffer)
+    (if use-image
+        (progn
+          (insert-image img)
+          (when remaining-text
+            (insert "\n" remaining-text)))
+      (insert (pomo-cat--ascii-cat-display-text)))
+    (goto-char (point-min))
+    (set-window-point (selected-window) (point-min))
+    (set-window-start (selected-window) (point-min))
+    (setq-local cursor-type nil)
+    (setq-local mode-line-format nil)
+    (read-only-mode 1)))
+
+(defun pomo-cat--apply-frame-geometry (frame geometry)
+  "Apply GEOMETRY plist to FRAME."
+  (when (and frame (frame-live-p frame))
+    (set-frame-position frame
+                        (plist-get geometry :left)
+                        (plist-get geometry :top))
+    (set-frame-size frame
+                    (plist-get geometry :width)
+                    (plist-get geometry :height))))
+
 (defun pomo-cat--calculate-frame-geometry (text)
   "Calculate optimal frame geometry for TEXT display.
 Returns plist with :left, :top, :width, :height."
   (let*
       ((size (pomo-cat--measure-ascii text))
-       (cols (car size))
-       (lines (cdr size))
+       ;; Keep a small safety margin.  Some GUI builds/platforms clip the last
+       ;; row/column when the frame is resized to the exact text dimensions.
+       (cols (+ 2 (car size)))
+       (lines (+ 2 (cdr size)))
        (workarea (frame-monitor-workarea))
        (work-left (nth 0 workarea))
        (work-top (nth 1 workarea))
@@ -423,26 +525,27 @@ GEOMETRY is a plist with :left, :top, :width, :height."
   "Display cat in a dedicated Emacs frame using only built-in functions.
 Displays image if available, otherwise falls back to ASCII art."
   (let* ((use-image (pomo-cat--image-available-p))
-         (img
-          (when use-image
-            (create-image pomo-cat-cat-image-path)))
+         (remaining-text (pomo-cat--break-remaining-text))
+         (img nil))
+    (when use-image
+      (condition-case err
+          (setq img (create-image pomo-cat-cat-image-path))
+        (error
+         (setq use-image nil)
+         (message "pomo-cat: Error preparing dedicated-frame image: %s"
+                  (error-message-string err)))))
+    (let* (
          (geometry
           (if use-image
-              (pomo-cat--calculate-frame-geometry-for-image img)
+              (pomo-cat--calculate-frame-geometry-for-image img remaining-text)
             (pomo-cat--calculate-frame-geometry
-             (pomo-cat--get-cat-text))))
-         (frame (pomo-cat--create-dedicated-frame geometry)))
-    (pomo-cat--state-set :dedicated-frame frame)
-    (with-selected-frame frame
-      (switch-to-buffer "*pomo-cat-break*")
-      (read-only-mode -1)
-      (erase-buffer)
-      (if use-image
-          (insert-image img)
-        (insert (pomo-cat--get-cat-text)))
-      (goto-char (point-min))
-      (setq-local mode-line-format nil)
-      (read-only-mode 1))))
+             (pomo-cat--ascii-cat-display-text))))
+         (frame (pomo-cat--state-get :dedicated-frame)))
+      (unless (and frame (frame-live-p frame))
+        (setq frame (pomo-cat--create-dedicated-frame geometry))
+        (pomo-cat--state-set :dedicated-frame frame))
+      (pomo-cat--apply-frame-geometry frame geometry)
+      (pomo-cat--update-dedicated-frame-content frame use-image img remaining-text))))
 
 (defun pomo-cat--manage-frame-focus (frame)
   "Manage focus behavior for FRAME according to `pomo-cat-get-focus'."
@@ -457,7 +560,7 @@ Displays image if available, otherwise falls back to ASCII art."
     (unless pomo-cat-get-focus
       (other-frame 0))))
 
-(defun pomo-cat--show-cat ()
+(defun pomo-cat--show-cat (&optional skip-focus-management)
   "Show a cat based on configuration and environment.
 - If `pomo-cat-use-dedicated-frame' is non-nil and GUI: dedicated-frame
 - If image is configured and GUI: posframe with image
@@ -467,7 +570,7 @@ Displays image if available, otherwise falls back to ASCII art."
        ;; Dedicated frame (GUI only)
        ((and pomo-cat-use-dedicated-frame (display-graphic-p))
         (pomo-cat--show-dedicated-frame)
-        (when pomo-cat-get-focus
+        (when (and pomo-cat-get-focus (not skip-focus-management))
           (pomo-cat--manage-frame-focus
            (pomo-cat--state-get :dedicated-frame))))
 
@@ -482,6 +585,29 @@ Displays image if available, otherwise falls back to ASCII art."
     (error
      (message "pomo-cat: Error showing cat: %s"
               (error-message-string err)))))
+
+(defun pomo-cat--display-ticker-supported-p ()
+  "Return non-nil when break display can be refreshed in-place."
+  (or (and pomo-cat-use-dedicated-frame (display-graphic-p))
+      (and (featurep 'posframe)
+           (display-graphic-p)
+           (posframe-workable-p))
+      (featurep 'popon)))
+
+(defun pomo-cat--refresh-break-display ()
+  "Refresh the visible break display countdown."
+  (if (not (pomo-cat--state-get :in-break))
+      (pomo-cat--cancel-display-ticker)
+    (pomo-cat--show-cat t)))
+
+(defun pomo-cat--start-display-ticker ()
+  "Start the 1-second break display refresh ticker."
+  (pomo-cat--cancel-display-ticker)
+  (when (and (pomo-cat--state-get :in-break)
+             (pomo-cat--display-ticker-supported-p))
+    (pomo-cat--state-set
+     :display-ticker
+     (run-at-time 1 1 #'pomo-cat--refresh-break-display))))
 
 (defun pomo-cat--start-break ()
   "Begin a short or long break and show cat display."
@@ -499,8 +625,12 @@ Displays image if available, otherwise falls back to ASCII art."
             (pomo-cat--get-break-duration))))
     (pomo-cat--state-set :break-type break-type)
     (pomo-cat--state-set :in-break t)
+    (pomo-cat--state-set :phase-end-time
+                         (time-add (current-time)
+                                   (seconds-to-time duration)))
     (message "Break started! (%s break)" (symbol-name break-type))
     (pomo-cat--show-cat)
+    (pomo-cat--start-display-ticker)
     (when pomo-cat-get-focus
       (other-frame 0))
     (pomo-cat--schedule-timer duration #'pomo-cat--start-work)))
@@ -512,6 +642,7 @@ Displays image if available, otherwise falls back to ASCII art."
         (duration (pomo-cat--get-work-duration)))
     (pomo-cat--state-set :cycle-count new-count)
     (pomo-cat--state-set :in-break nil)
+    (pomo-cat--state-set :phase-end-time nil)
     (message "Pomodoro work #%d started!" new-count)
     (pomo-cat--schedule-timer duration #'pomo-cat--start-break)))
 
@@ -557,6 +688,7 @@ If SECONDS is negative, it is treated as 0."
               (max 0 pomo-cat-delay-break-seconds)))))
       (pomo-cat--clear-cat-display)
       (pomo-cat--state-set :in-break nil) ; Mark as not in break during delay
+      (pomo-cat--state-set :phase-end-time nil)
       (pomo-cat--schedule-timer delay #'pomo-cat--start-break)
       (message "Break delayed %ds." delay))))
 
