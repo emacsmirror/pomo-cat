@@ -25,6 +25,10 @@
 (declare-function posframe-show "posframe")
 (declare-function posframe-delete "posframe")
 (declare-function posframe-poshandler-frame-center "posframe")
+(declare-function posframe-poshandler-frame-top-left-corner "posframe")
+(declare-function posframe-poshandler-frame-top-right-corner "posframe")
+(declare-function posframe-poshandler-frame-bottom-left-corner "posframe")
+(declare-function posframe-poshandler-frame-bottom-right-corner "posframe")
 (declare-function popon-create "popon")
 (declare-function popon-kill "popon")
 
@@ -67,8 +71,38 @@ Example configuration:
   "Use dedicated frame for break display.
 When non-nil and in GUI environment, displays break notification
 in a separate independent frame.
+When set to symbol `topmost', the dedicated frame is also requested
+to stay above normal windows (platform/window-manager dependent).
 When nil, uses posframe (if image is configured) or popon (ASCII art)."
-  :type 'boolean)
+  :type '(choice
+          (const :tag "Disabled" nil)
+          (const :tag "Dedicated frame" t)
+          (const :tag "Dedicated frame (always on top)" topmost)))
+
+(defcustom pomo-cat-dedicated-frame-position 'center
+  "Position of the dedicated break frame on screen.
+This setting is used only when `pomo-cat-use-dedicated-frame' is non-nil."
+  :type '(choice
+          (const :tag "Center" center)
+          (const :tag "Top left" top-left)
+          (const :tag "Top right" top-right)
+          (const :tag "Bottom left" bottom-left)
+          (const :tag "Bottom right" bottom-right)))
+
+(defcustom pomo-cat-dedicated-frame-margin-pixels 24
+  "Margin in pixels from screen edges for dedicated frame corner positions.
+This setting is ignored when `pomo-cat-dedicated-frame-position' is `center'."
+  :type 'integer)
+
+(defcustom pomo-cat-overlay-position 'center
+  "Position of non-dedicated break display (`posframe' / `popon').
+This setting is used when `pomo-cat-use-dedicated-frame' is nil."
+  :type '(choice
+          (const :tag "Center" center)
+          (const :tag "Top left" top-left)
+          (const :tag "Top right" top-right)
+          (const :tag "Bottom left" bottom-left)
+          (const :tag "Bottom right" bottom-right)))
 
 (defcustom pomo-cat-ascii-cat "
 ███████████████████████████
@@ -293,8 +327,8 @@ This ensures only one timer is active at a time."
     (cons width height)))
 
 (defun pomo-cat--show-posframe (content &optional width height)
-  "Display CONTENT in a centered posframe with optional WIDTH and HEIGHT.
-Uses theme colors for foreground/background."
+  "Display CONTENT in a posframe with optional WIDTH and HEIGHT.
+Uses theme colors and `pomo-cat-overlay-position'."
   (when (and (featurep 'posframe)
              (display-graphic-p)
              (posframe-workable-p))
@@ -305,12 +339,43 @@ Uses theme colors for foreground/background."
        "*pomo-cat*"
        :string content
        :position (point)
-       :poshandler #'posframe-poshandler-frame-center
+       :poshandler (pomo-cat--posframe-poshandler)
        :background-color bg
        :foreground-color fg
        :width width
        :height height)
       t)))
+
+(defun pomo-cat--posframe-poshandler ()
+  "Return posframe poshandler function for `pomo-cat-overlay-position'."
+  (pcase pomo-cat-overlay-position
+    ('top-left #'posframe-poshandler-frame-top-left-corner)
+    ('top-right #'posframe-poshandler-frame-top-right-corner)
+    ('bottom-left #'posframe-poshandler-frame-bottom-left-corner)
+    ('bottom-right #'posframe-poshandler-frame-bottom-right-corner)
+    (_ #'posframe-poshandler-frame-center)))
+
+(defun pomo-cat--popon-position (cols lines)
+  "Return `(x . y)' position for a popon of COLS x LINES."
+  (let* ((frame-cols (frame-width))
+         (frame-lines (frame-height))
+         (center-x (max 0 (/ (- frame-cols cols) 2)))
+         (center-y (max 0 (/ (- frame-lines lines) 2)))
+         (x center-x)
+         (y center-y))
+    (pcase pomo-cat-overlay-position
+      ('top-left
+       (setq x 0 y 0))
+      ('top-right
+       (setq x (max 0 (- frame-cols cols))
+             y 0))
+      ('bottom-left
+       (setq x 0
+             y (max 0 (- frame-lines lines))))
+      ('bottom-right
+       (setq x (max 0 (- frame-cols cols))
+             y (max 0 (- frame-lines lines)))))
+    (cons x y)))
 
 (defun pomo-cat--show-ascii-cat ()
   "Display ASCII art of the cat using `posframe` (GUI) or `popon` (terminal)."
@@ -330,12 +395,8 @@ Uses theme colors for foreground/background."
         (when old-popo
           (ignore-errors (popon-kill old-popo))
           (pomo-cat--state-set :popon-instance nil)))
-      (let* ((frame-width (frame-width))
-             (frame-height (frame-height))
-             (x (max 0 (/ (- frame-width cols) 2)))
-             (y (max 0 (/ (- frame-height lines) 2))))
-        (pomo-cat--state-set
-         :popon-instance (popon-create cat-text `(,x . ,y)))))
+      (pomo-cat--state-set
+       :popon-instance (popon-create cat-text (pomo-cat--popon-position cols lines))))
      ;; Fallback: message area
      (t
       (message "\n%s" cat-text)))))
@@ -366,7 +427,7 @@ Uses theme colors for foreground/background."
           (posframe-show
            "*pomo-cat*"
            :string ""
-           :poshandler #'posframe-poshandler-frame-center
+           :poshandler (pomo-cat--posframe-poshandler)
            :width cols
            :height lines)
           (with-current-buffer "*pomo-cat*"
@@ -400,23 +461,16 @@ Returns plist with :left, :top, :width, :height."
          (extra-lines (if remaining-text 2 0))
          (cols (max img-cols text-cols))
          (lines (+ img-lines extra-lines))
-         (workarea (frame-monitor-workarea))
-         (work-left (nth 0 workarea))
-         (work-top (nth 1 workarea))
-         (work-width (nth 2 workarea))
-         (work-height (nth 3 workarea))
          (border-pixels 16)
          (frame-width-pixels
           (+ (max img-width (* text-cols char-width)) border-pixels))
          (frame-height-pixels
           (+ img-height (* extra-lines char-height) border-pixels))
-         (center-x
-          (+ work-left (/ (- work-width frame-width-pixels) 2)))
-         (center-y
-          (+ work-top (/ (- work-height frame-height-pixels) 2))))
+         (position (pomo-cat--dedicated-frame-screen-position
+                    frame-width-pixels frame-height-pixels)))
     (list
-     :left (max 0 center-x)
-     :top (max 0 center-y)
+     :left (plist-get position :left)
+     :top (plist-get position :top)
      :width cols
      :height lines)))
 
@@ -451,6 +505,48 @@ REMAINING-TEXT is appended when non-nil."
                     (plist-get geometry :width)
                     (plist-get geometry :height))))
 
+(defun pomo-cat--apply-dedicated-frame-mode (frame)
+  "Apply mode-specific parameters to dedicated FRAME."
+  (when (and frame (frame-live-p frame))
+    ;; `z-group' support depends on the GUI backend and window manager.
+    ;; Ignore errors so dedicated-frame mode still works everywhere.
+    (condition-case nil
+        (set-frame-parameter
+         frame 'z-group
+         (when (eq pomo-cat-use-dedicated-frame 'topmost) 'above))
+      (error nil))))
+
+(defun pomo-cat--dedicated-frame-screen-position (frame-width-pixels frame-height-pixels)
+  "Calculate dedicated frame screen position for given pixel dimensions.
+Returns a plist with `:left' and `:top'."
+  (let* ((workarea (frame-monitor-workarea))
+         (work-left (nth 0 workarea))
+         (work-top (nth 1 workarea))
+         (work-width (nth 2 workarea))
+         (work-height (nth 3 workarea))
+         (margin (max 0 pomo-cat-dedicated-frame-margin-pixels))
+         (max-left (+ work-left (max 0 (- work-width frame-width-pixels))))
+         (max-top (+ work-top (max 0 (- work-height frame-height-pixels))))
+         (center-left (+ work-left (/ (- work-width frame-width-pixels) 2)))
+         (center-top (+ work-top (/ (- work-height frame-height-pixels) 2)))
+         (left center-left)
+         (top center-top))
+    (pcase pomo-cat-dedicated-frame-position
+      ('top-left
+       (setq left (+ work-left margin)
+             top (+ work-top margin)))
+      ('top-right
+       (setq left (- (+ work-left work-width) frame-width-pixels margin)
+             top (+ work-top margin)))
+      ('bottom-left
+       (setq left (+ work-left margin)
+             top (- (+ work-top work-height) frame-height-pixels margin)))
+      ('bottom-right
+       (setq left (- (+ work-left work-width) frame-width-pixels margin)
+             top (- (+ work-top work-height) frame-height-pixels margin))))
+    (list :left (min max-left (max work-left left))
+          :top (min max-top (max work-top top)))))
+
 (defun pomo-cat--calculate-frame-geometry (text)
   "Calculate optimal frame geometry for TEXT display.
 Returns plist with :left, :top, :width, :height."
@@ -460,11 +556,6 @@ Returns plist with :left, :top, :width, :height."
        ;; row/column when the frame is resized to the exact text dimensions.
        (cols (+ 2 (car size)))
        (lines (+ 2 (cdr size)))
-       (workarea (frame-monitor-workarea))
-       (work-left (nth 0 workarea))
-       (work-top (nth 1 workarea))
-       (work-width (nth 2 workarea))
-       (work-height (nth 3 workarea))
        (char-width (frame-char-width))
        (char-height (frame-char-height))
        ;; Add margin for internal border (8px each side = 16px total)
@@ -472,14 +563,11 @@ Returns plist with :left, :top, :width, :height."
        ;; Calculate frame size in pixels for centering calculation
        (frame-width-pixels (+ (* cols char-width) border-pixels))
        (frame-height-pixels (+ (* lines char-height) border-pixels))
-       ;; Calculate coordinates for center screen positioning
-       (center-x
-        (+ work-left (/ (- work-width frame-width-pixels) 2)))
-       (center-y
-        (+ work-top (/ (- work-height frame-height-pixels) 2))))
+       (position (pomo-cat--dedicated-frame-screen-position
+                  frame-width-pixels frame-height-pixels)))
     (list
-     :left (max 0 center-x)
-     :top (max 0 center-y)
+     :left (plist-get position :left)
+     :top (plist-get position :top)
      :width cols
      :height lines)))
 
@@ -514,7 +602,9 @@ GEOMETRY is a plist with :left, :top, :width, :height."
           (no-focus-on-map . t)
           ;; Other settings
           (unsplittable . t)
-          (minibuffer . nil)))
+          (minibuffer . nil)
+          ,@(when (eq pomo-cat-use-dedicated-frame 'topmost)
+              '((z-group . above)))))
        ;; Temporarily disable default-frame-alist to prevent override
        (frame
         (let ((default-frame-alist nil))
@@ -544,6 +634,7 @@ Displays image if available, otherwise falls back to ASCII art."
       (unless (and frame (frame-live-p frame))
         (setq frame (pomo-cat--create-dedicated-frame geometry))
         (pomo-cat--state-set :dedicated-frame frame))
+      (pomo-cat--apply-dedicated-frame-mode frame)
       (pomo-cat--apply-frame-geometry frame geometry)
       (pomo-cat--update-dedicated-frame-content frame use-image img remaining-text))))
 

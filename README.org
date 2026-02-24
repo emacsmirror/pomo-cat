@@ -178,15 +178,50 @@ Use =M-x customize-group RET pomo-cat RET= or set variables directly in your ini
 
 - `pomo-cat-use-dedicated-frame` ::
   When non-nil and in GUI environment, displays break notification in a
-  separate independent frame. When nil, uses posframe (if image is configured)
-  or popon (ASCII art). Default is nil.
+  separate independent frame. When set to ~topmost~, the dedicated frame is
+  requested to stay above normal windows (platform/window-manager dependent).
+  When nil, uses posframe (if image is configured) or popon (ASCII art).
+  Default is nil.
 
   #+begin_src emacs-lisp
     ;; Use dedicated frame (independent window)
     (setq pomo-cat-use-dedicated-frame t)
 
+    ;; Use dedicated frame and request "always on top"
+    (setq pomo-cat-use-dedicated-frame 'topmost)
+
     ;; Use posframe/popon based on image configuration (default)
     (setq pomo-cat-use-dedicated-frame nil)
+  #+end_src
+
+- `pomo-cat-dedicated-frame-position` ::
+  Controls the position of the dedicated frame (GUI only).
+  Supported values: ~center~, ~top-left~, ~top-right~, ~bottom-left~,
+  ~bottom-right~. Default is ~center~.
+
+  #+begin_src emacs-lisp
+    ;; Show dedicated frame at bottom-right
+    (setq pomo-cat-use-dedicated-frame t
+          pomo-cat-dedicated-frame-position 'bottom-right)
+  #+end_src
+
+- `pomo-cat-dedicated-frame-margin-pixels` ::
+  Margin (pixels) from screen edges for dedicated frame corner positions.
+  Ignored when dedicated frame position is ~center~.
+
+  #+begin_src emacs-lisp
+    (setq pomo-cat-dedicated-frame-margin-pixels 24)
+  #+end_src
+
+- `pomo-cat-overlay-position` ::
+  Controls the position of non-dedicated display modes (~posframe~ / ~popon~).
+  Supported values: ~center~, ~top-left~, ~top-right~, ~bottom-left~,
+  ~bottom-right~. Default is ~center~.
+
+  #+begin_src emacs-lisp
+    ;; For posframe/popon, place cat at bottom-right
+    (setq pomo-cat-use-dedicated-frame nil
+          pomo-cat-overlay-position 'bottom-right)
   #+end_src
 
 - `pomo-cat-get-focus` ::
@@ -224,7 +259,9 @@ The dedicated frame mode offers the most robust break notification experience:
 
 #+begin_src emacs-lisp
   ;; Enable dedicated frame with optimal settings
-  (setq pomo-cat-use-dedicated-frame t
+  (setq pomo-cat-use-dedicated-frame 'topmost
+        pomo-cat-dedicated-frame-position 'bottom-right
+        pomo-cat-dedicated-frame-margin-pixels 24
         pomo-cat-get-focus nil)  ; Non-intrusive notifications
 
   ;; Optionally use image in dedicated frame
@@ -233,7 +270,7 @@ The dedicated frame mode offers the most robust break notification experience:
                           (file-name-directory (locate-library "pomo-cat"))))
 
   ;; The frame will:
-  ;; - Appear in screen center automatically
+  ;; - Appear at the configured screen position
   ;; - Be visible even with other apps active
   ;; - Allow normal window switching (Alt+Tab)
   ;; - Clean up automatically when break ends
@@ -242,7 +279,7 @@ The dedicated frame mode offers the most robust break notification experience:
 ** Multi-Monitor Support
 
 The dedicated frame automatically adapts to your display configuration:
-- Centers on your primary display
+- Positions on your primary display using the configured anchor (center/corners)
 - Respects taskbars and system UI
 - Works with various screen resolutions
 - Supports multi-monitor workflows
@@ -273,6 +310,20 @@ If the cat doesn't appear as expected:
   ;; Test dedicated frame (no dependencies needed for frame itself)
   (setq pomo-cat-use-dedicated-frame t)
 #+end_src
+
+** Dedicated Frame Position Notes
+
+- Dedicated frame and overlay modes use different settings:
+  - Dedicated frame :: ~pomo-cat-dedicated-frame-position~
+  - Posframe/popon :: ~pomo-cat-overlay-position~
+- On some Wayland environments (for example PGTK Emacs), the compositor may
+  ignore window position requests for separate top-level frames. In that case,
+  dedicated frames may still appear centered or compositor-managed even when
+  ~pomo-cat-dedicated-frame-position~ is set.
+- Posframe/popon positioning is inside the current Emacs frame/terminal, so it
+  is usually not affected by the above Wayland limitation.
+- Dedicated frame "always on top" (~pomo-cat-use-dedicated-frame~ = ~'topmost~)
+  is also backend/window-manager dependent.
 
 ** Focus Problems
 
