@@ -165,6 +165,22 @@ Returns VALUE if valid, otherwise returns a sensible default and warns."
   (pomo-cat--validate-positive-integer
    pomo-cat-long-break-duration-seconds "long-break-duration"))
 
+(defun pomo-cat--get-cycles-before-long-break ()
+  "Get validated cycle count before long break."
+  (let ((value pomo-cat-cycles-before-long-break))
+    (cond
+     ((and (integerp value) (> value 0))
+      value)
+     ((and (numberp value) (> value 0))
+      (let ((rounded (round value)))
+        (message "pomo-cat: cycles-before-long-break should be integer, using %d"
+                 rounded)
+        rounded))
+     (t
+      (message "pomo-cat: Invalid cycles-before-long-break (%s), using default 4"
+               value)
+      4))))
+
 ;;; Timer Management
 ;;
 ;; Safe timer operations to prevent race conditions.
@@ -231,7 +247,9 @@ This ensures only one timer is active at a time."
 (defun pomo-cat--show-posframe (content &optional width height)
   "Display CONTENT in a centered posframe with optional WIDTH and HEIGHT.
 Uses theme colors for foreground/background."
-  (when (and (featurep 'posframe) (display-graphic-p))
+  (when (and (featurep 'posframe)
+             (display-graphic-p)
+             (posframe-workable-p))
     (let* ((colors (pomo-cat--theme-colors))
            (fg (car colors))
            (bg (cdr colors)))
@@ -243,7 +261,8 @@ Uses theme colors for foreground/background."
        :background-color bg
        :foreground-color fg
        :width width
-       :height height))))
+       :height height)
+      t)))
 
 (defun pomo-cat--show-ascii-cat ()
   "Display ASCII art of the cat using `posframe` (GUI) or `popon` (terminal)."
@@ -253,7 +272,9 @@ Uses theme colors for foreground/background."
          (lines (cdr size)))
     (cond
      ;; GUI: use posframe
-     ((and (featurep 'posframe) (display-graphic-p))
+     ((and (featurep 'posframe)
+           (display-graphic-p)
+           (posframe-workable-p))
       (pomo-cat--show-posframe cat-text cols lines))
      ;; Terminal: use popon
      ((featurep 'popon)
@@ -271,24 +292,31 @@ Uses theme colors for foreground/background."
   "Display the configured cat image using posframe, if available."
   (when (and (featurep 'posframe)
              (display-graphic-p)
+             (posframe-workable-p)
              (stringp pomo-cat-cat-image-path)
              (file-exists-p pomo-cat-cat-image-path))
-    (let* ((img (create-image pomo-cat-cat-image-path))
-           (width (car (image-size img t)))
-           (height (cdr (image-size img t)))
-           (char-width (frame-char-width))
-           (char-height (frame-char-height))
-           (cols (ceiling (/ (float width) char-width)))
-           (lines (ceiling (/ (float height) char-height))))
-      (posframe-show
-       "*pomo-cat*"
-       :string ""
-       :poshandler #'posframe-poshandler-frame-center
-       :width cols
-       :height lines)
-      (with-current-buffer "*pomo-cat*"
-        (erase-buffer)
-        (insert-image img)))))
+    (condition-case err
+        (let* ((img (create-image pomo-cat-cat-image-path))
+               (width (car (image-size img t)))
+               (height (cdr (image-size img t)))
+               (char-width (frame-char-width))
+               (char-height (frame-char-height))
+               (cols (ceiling (/ (float width) char-width)))
+               (lines (ceiling (/ (float height) char-height))))
+          (posframe-show
+           "*pomo-cat*"
+           :string ""
+           :poshandler #'posframe-poshandler-frame-center
+           :width cols
+           :height lines)
+          (with-current-buffer "*pomo-cat*"
+            (erase-buffer)
+            (insert-image img))
+          t)
+      (error
+       (message "pomo-cat: Error showing image: %s"
+                (error-message-string err))
+       nil))))
 
 (defun pomo-cat--image-available-p ()
   "Return non-nil if cat image is available for display."
@@ -445,7 +473,8 @@ Displays image if available, otherwise falls back to ASCII art."
 
        ;; Posframe with image (GUI only, when image is configured)
        ((pomo-cat--image-available-p)
-        (pomo-cat--show-image))
+        (or (pomo-cat--show-image)
+            (pomo-cat--show-ascii-cat)))
 
        ;; Default: ASCII cat (popon or fallback)
        (t
@@ -457,9 +486,11 @@ Displays image if available, otherwise falls back to ASCII art."
 (defun pomo-cat--start-break ()
   "Begin a short or long break and show cat display."
   (let* ((cycle-count (pomo-cat--state-get :cycle-count))
+         (cycles-before-long-break
+          (pomo-cat--get-cycles-before-long-break))
          (break-type
           (if (zerop
-               (% cycle-count pomo-cat-cycles-before-long-break))
+               (% cycle-count cycles-before-long-break))
               'long
             'short))
          (duration
@@ -506,10 +537,24 @@ Displays image if available, otherwise falls back to ASCII art."
   "Delay the current break for SECONDS.
 If SECONDS is nil, uses `pomo-cat-delay-break-seconds'.
 If SECONDS is negative, it is treated as 0."
-  (interactive "P")
+  (interactive
+   (list
+    (when current-prefix-arg
+      (prefix-numeric-value current-prefix-arg))))
   (if (not (pomo-cat--state-get :in-break))
       (message "pomo-cat: Not currently in a break.")
-    (let ((delay (max 0 (or seconds pomo-cat-delay-break-seconds))))
+    (let* ((raw-delay (or seconds pomo-cat-delay-break-seconds))
+           (delay
+            (cond
+             ((integerp raw-delay)
+              (max 0 raw-delay))
+             ((numberp raw-delay)
+              (max 0 (round raw-delay)))
+             (t
+              (message "pomo-cat: Invalid delay (%s), using default %d"
+                       raw-delay
+                       pomo-cat-delay-break-seconds)
+              (max 0 pomo-cat-delay-break-seconds)))))
       (pomo-cat--clear-cat-display)
       (pomo-cat--state-set :in-break nil) ; Mark as not in break during delay
       (pomo-cat--schedule-timer delay #'pomo-cat--start-break)
